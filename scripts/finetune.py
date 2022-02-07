@@ -34,12 +34,13 @@ def extract_all_chars(batch):
 def run_train(output_model_name, base_xlsr_model, ds):
     tokenizer = Wav2Vec2CTCTokenizer("./vocab.json", unk_token="[UNK]", pad_token="[PAD]", word_delimiter_token="|")
     feature_extractor = Wav2Vec2FeatureExtractor(feature_size=1, sampling_rate=16000, padding_value=0.0,
-                                                 do_normalize=True, return_attention_mask=True)
+                                                 do_normalize=True, return_attention_mask=False)
     processor = Wav2Vec2Processor(feature_extractor=feature_extractor, tokenizer=tokenizer)
     processor.save_pretrained(f'./{output_model_name}')
 
     def prepare_dataset(batch):
-        batch["input_values"] = processor(batch['audio'], sampling_rate=16000).input_values
+        batch["input_values"] = processor(batch['audio'], sampling_rate=16000).input_values[0]
+        batch["input_length"] = len(batch["input_values"])
 
         with processor.as_target_processor():
             batch["labels"] = processor(batch["text"]).input_ids
@@ -60,7 +61,11 @@ def run_train(output_model_name, base_xlsr_model, ds):
         return {"wer": wer}
 
     # prepared_ds = ds.map(prepare_dataset, remove_columns=ds.column_names["train"], num_proc=4)
-    prepared_ds = ds.map(prepare_dataset, remove_columns=ds.column_names['train'], batch_size=8, num_proc=4, batched=True)
+    prepared_ds = ds.map(prepare_dataset, remove_columns=ds.column_names['train'], num_proc=4)
+    max_input_length_in_sec = 4.0
+    prepared_ds = prepared_ds.filter(
+        lambda x: x < max_input_length_in_sec * processor.feature_extractor.sampling_rate,
+        input_columns=["input_length"])
 
     # train = train.map(prepare_dataset, remove_columns=train.column_names)
     # test = test.map(prepare_dataset, remove_columns=test.column_names)
@@ -70,15 +75,8 @@ def run_train(output_model_name, base_xlsr_model, ds):
 
     model = Wav2Vec2ForCTC.from_pretrained(
         base_xlsr_model,
-        attention_dropout=0.1,
-        hidden_dropout=0.1,
-        feat_proj_dropout=0.0,
-        mask_time_prob=0.05,
-        layerdrop=0.1,
-        gradient_checkpointing=True,
         ctc_loss_reduction="mean",
-        pad_token_id=processor.tokenizer.pad_token_id,
-        vocab_size=len(processor.tokenizer)
+        pad_token_id=processor.tokenizer.pad_token_id
     )
 
     model.freeze_feature_extractor()
@@ -86,15 +84,16 @@ def run_train(output_model_name, base_xlsr_model, ds):
     training_args = TrainingArguments(
         output_dir=output_model_name,
         group_by_length=True,
-        per_device_train_batch_size=4,
-        gradient_accumulation_steps=2,
+        per_device_train_batch_size=32,
         evaluation_strategy="steps",
-        num_train_epochs=5,
-        fp16=False,
+        num_train_epochs=30,
+        fp16=True,
+        gradient_checkpointing=True,
         save_steps=500,
         eval_steps=500,
         logging_steps=500,
-        learning_rate=3e-4,
+        learning_rate=1e-4,
+        weight_decay=0.005,
         warmup_steps=1000,
         save_total_limit=2,
     )
