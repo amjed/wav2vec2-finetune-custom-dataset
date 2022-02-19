@@ -1,9 +1,11 @@
 from setuptools import setup, find_packages
 
 REQUIRED = [
-    "torch==1.10.1",
-    "transformers==4.13.0",
-    "librosa==0.8.1"
+    "transformers==4.16.2",
+    "librosa==0.8.1",
+    "numpy==1.22",
+    "datasets==1.16.1",
+    "jiwer==2.3.0"
     ]
 
 setup(
@@ -16,4 +18,8 @@ setup(
     python_requires='>=3.6',
     include_package_data=True,
     install_requires=REQUIRED,
+    entry_points={
+        'console_scripts':
+            ['fine_tune_custom = finetune.finetune:run']
+    }
 )

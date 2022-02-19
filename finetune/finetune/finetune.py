@@ -1,14 +1,12 @@
 import argparse
-import json
 import os
 import pickle
-import re
 
 from datasets import load_metric, set_caching_enabled
 from transformers import Wav2Vec2CTCTokenizer, Wav2Vec2ForCTC, Wav2Vec2Processor, Trainer, TrainingArguments, \
     Wav2Vec2FeatureExtractor
 
-from scripts.DataCollatorCTCWithPadding import DataCollatorCTCWithPadding
+from finetune.DataCollatorCTCWithPadding import DataCollatorCTCWithPadding
 
 set_caching_enabled(False)
 
@@ -17,29 +15,16 @@ import numpy as np
 # Set environment variables
 os.environ['WANDB_DISABLED '] = 'True'
 
-chars_to_ignore_regex = '[\,\?\.\!\-\;\:\"\+\d]'
 
-
-def remove_special_characters(batch):
-    batch["text"] = re.sub(chars_to_ignore_regex, '', batch["text"]).lower()
-    return batch
-
-
-def extract_all_chars(batch):
-    all_text = " ".join(batch["text"])
-    vocab = list(set(all_text))
-    return {"vocab": [vocab], "all_text": [all_text]}
-
-
-def run_train(output_model_name, base_xlsr_model, ds):
-    tokenizer = Wav2Vec2CTCTokenizer("./vocab.json", unk_token="[UNK]", pad_token="[PAD]", word_delimiter_token="|")
+def run_train(output_model_name, base_xlsr_model, ds, vocab_json_file):
+    tokenizer = Wav2Vec2CTCTokenizer(vocab_json_file, unk_token="[UNK]", pad_token="[PAD]", word_delimiter_token="|")
     feature_extractor = Wav2Vec2FeatureExtractor(feature_size=1, sampling_rate=16000, padding_value=0.0,
                                                  do_normalize=True, return_attention_mask=True)
     processor = Wav2Vec2Processor(feature_extractor=feature_extractor, tokenizer=tokenizer)
     processor.save_pretrained(f'./{output_model_name}')
 
     def prepare_dataset(batch):
-        batch["input_values"] = processor(batch['audio'], sampling_rate=16000).input_values
+        batch["input_values"] = processor(np.asarray(batch['audio']), sampling_rate=16000).input_values[0]
 
         with processor.as_target_processor():
             batch["labels"] = processor(batch["text"]).input_ids
@@ -59,26 +44,15 @@ def run_train(output_model_name, base_xlsr_model, ds):
 
         return {"wer": wer}
 
-    # prepared_ds = ds.map(prepare_dataset, remove_columns=ds.column_names["train"], num_proc=4)
-    prepared_ds = ds.map(prepare_dataset, remove_columns=ds.column_names['train'], batch_size=8, num_proc=4, batched=True)
-
-    # train = train.map(prepare_dataset, remove_columns=train.column_names)
-    # test = test.map(prepare_dataset, remove_columns=test.column_names)
+    prepared_ds = ds.map(prepare_dataset, remove_columns=ds.column_names["train"], num_proc=8)
 
     data_collator = DataCollatorCTCWithPadding(processor=processor, padding=True)
     wer_metric = load_metric("wer")
 
     model = Wav2Vec2ForCTC.from_pretrained(
         base_xlsr_model,
-        attention_dropout=0.1,
-        hidden_dropout=0.1,
-        feat_proj_dropout=0.0,
-        mask_time_prob=0.05,
-        layerdrop=0.1,
-        gradient_checkpointing=True,
         ctc_loss_reduction="mean",
-        pad_token_id=processor.tokenizer.pad_token_id,
-        vocab_size=len(processor.tokenizer)
+        pad_token_id=processor.tokenizer.pad_token_id
     )
 
     model.freeze_feature_extractor()
@@ -86,11 +60,11 @@ def run_train(output_model_name, base_xlsr_model, ds):
     training_args = TrainingArguments(
         output_dir=output_model_name,
         group_by_length=True,
-        per_device_train_batch_size=4,
+        per_device_train_batch_size=8,
         gradient_accumulation_steps=2,
         evaluation_strategy="steps",
-        num_train_epochs=5,
-        fp16=False,
+        num_train_epochs=30,
+        fp16=True,
         save_steps=500,
         eval_steps=500,
         logging_steps=500,
@@ -121,23 +95,6 @@ def get_train_test_sets(dataset_pickle):
 
     ict_ds = raw_ds.train_test_split(0.2)
 
-    ict_ds = ict_ds.map(remove_special_characters)
-
-    vocabs = ict_ds.map(extract_all_chars, batched=True, batch_size=-1, keep_in_memory=True,
-                        remove_columns=ict_ds.column_names["train"])
-    vocab_list = list(set(vocabs["train"]["vocab"][0]) | set(vocabs["test"]["vocab"][0]))
-    vocab_list.sort()
-
-    vocab_dict = {v: k for k, v in enumerate(vocab_list)}
-    vocab_dict["|"] = vocab_dict[" "]
-    del vocab_dict[" "]
-    vocab_dict["[UNK]"] = len(vocab_dict)
-    vocab_dict["[PAD]"] = len(vocab_dict)
-    len(vocab_dict)
-
-    with open('vocab.json', 'w') as vocab_file:
-        json.dump(vocab_dict, vocab_file)
-
     return ict_ds
 
 
@@ -145,14 +102,16 @@ def main(args: argparse.Namespace):
     output_model_name = args.tuned
     base_model_name = args.base
     dataset_pickle = args.dataset
+    vocab_file = args.vocab
     ds = get_train_test_sets(dataset_pickle)
-    run_train(output_model_name, base_model_name, ds)
+    run_train(output_model_name, base_model_name, ds, vocab_file)
 
 
 def parser():
     argument_parser = argparse.ArgumentParser()
     argument_parser.add_argument('--dataset', type=str, help='pickled raw dataset to be split in script', nargs='?',
                                  required=True)
+    argument_parser.add_argument('--vocab', type=str, help='vocab json file', nargs='?', required=True)
     argument_parser.add_argument('--base', type=str, help='base xslr model name', nargs='?', required=True)
     argument_parser.add_argument('--tuned', type=str, help='fine-tuned model name', nargs='?', required=True)
     return argument_parser.parse_args()
