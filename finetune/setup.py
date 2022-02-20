@@ -20,6 +20,9 @@ setup(
     install_requires=REQUIRED,
     entry_points={
         'console_scripts':
-            ['fine_tune_custom = finetune.finetune:run']
+            [
+                'fine_tune_xlsr = finetune.finetune:run',
+                'fine_tune_base = finetune.finetune_base:run',
+             ]
     }
 )
