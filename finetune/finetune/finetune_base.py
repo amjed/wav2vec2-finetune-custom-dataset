@@ -16,10 +16,10 @@ import numpy as np
 os.environ['WANDB_DISABLED '] = 'True'
 
 
-def run_train(output_model_name, base_xlsr_model, ds, vocab_json_file, epochs):
+def run_train(output_model_name, base_model, ds, vocab_json_file, epochs):
     tokenizer = Wav2Vec2CTCTokenizer(vocab_json_file, unk_token="[UNK]", pad_token="[PAD]", word_delimiter_token="|")
     feature_extractor = Wav2Vec2FeatureExtractor(feature_size=1, sampling_rate=16000, padding_value=0.0,
-                                                 do_normalize=True, return_attention_mask=True)
+                                                 do_normalize=True, return_attention_mask=False)
     processor = Wav2Vec2Processor(feature_extractor=feature_extractor, tokenizer=tokenizer)
     processor.save_pretrained(f'./{output_model_name}')
 
@@ -50,7 +50,7 @@ def run_train(output_model_name, base_xlsr_model, ds, vocab_json_file, epochs):
     wer_metric = load_metric("wer")
 
     model = Wav2Vec2ForCTC.from_pretrained(
-        base_xlsr_model,
+        base_model,
         ctc_loss_reduction="mean",
         pad_token_id=processor.tokenizer.pad_token_id
     )
@@ -60,7 +60,7 @@ def run_train(output_model_name, base_xlsr_model, ds, vocab_json_file, epochs):
     training_args = TrainingArguments(
         output_dir=output_model_name,
         group_by_length=True,
-        per_device_train_batch_size=8,
+        per_device_train_batch_size=32,
         gradient_accumulation_steps=2,
         evaluation_strategy="steps",
         num_train_epochs=epochs,
@@ -113,8 +113,8 @@ def parser():
     argument_parser.add_argument('--dataset', type=str, help='pickled raw dataset to be split in script', nargs='?',
                                  required=True)
     argument_parser.add_argument('--vocab', type=str, help='vocab json file', nargs='?', required=True)
-    argument_parser.add_argument('--base', type=str, help='base xslr model name', nargs='?', required=True)
     argument_parser.add_argument('--tuned', type=str, help='fine-tuned model name', nargs='?', required=True)
+    argument_parser.add_argument('--base', type=str, help='base model name', nargs='?', required=False, default='facebook/wav2vec2-base')
     argument_parser.add_argument('--epochs', type=str, help='num epocs', nargs='?', required=False, default=30)
     return argument_parser.parse_args()
 
